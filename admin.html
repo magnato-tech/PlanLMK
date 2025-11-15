@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8" />
+  <title>Admin – Standardoppgaver</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 1.5rem;
+      max-width: 1100px;
+    }
+    h1, h2 {
+      margin-bottom: 0.4rem;
+    }
+    .small {
+      font-size: 0.8rem;
+      color: #555;
+    }
+    label {
+      font-weight: 600;
+    }
+    select, input[type="text"], input[type="number"] {
+      padding: 0.25rem 0.4rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.7rem;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 0.3rem 0.4rem;
+      font-size: 0.85rem;
+      vertical-align: middle;
+    }
+    th {
+      background: #f3f3f3;
+      text-align: left;
+    }
+    input[type="text"], input[type="number"] {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    button {
+      padding: 0.35rem 0.7rem;
+      margin-top: 0.6rem;
+      cursor: pointer;
+      border-radius: 4px;
+      border: 1px solid #999;
+      background: #f5f5f5;
+      font-size: 0.85rem;
+    }
+    button.primary {
+      background: #2f7cf6;
+      color: white;
+      border-color: #2f7cf6;
+    }
+    button + button {
+      margin-left: 0.4rem;
+    }
+    .pill {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      background: #eef3ff;
+      font-size: 0.7rem;
+      margin-left: 0.3rem;
+    }
+    #saveStatus {
+      font-size: 0.8rem;
+      margin-left: 0.6rem;
+    }
+    .error {
+      color: #b00020;
+      font-size: 0.8rem;
+      margin-top: 0.3rem;
+    }
+    .row-inactive {
+      opacity: 0.5;
+    }
+  </style>
+</head>
+<body>
+  <h1>Admin – Standardoppgaver / prosedyrer</h1>
+  <p class="small">
+    Her vedlikeholder du standardoppgavene (prosedyrer) per aktivitet.
+    Disse fungerer som maler for oppgaver som blir generert for hvert arrangement.
+  </p>
+
+  <section>
+    <label for="activityFilter">Velg aktivitet:</label><br />
+    <select id="activityFilter" style="min-width: 260px;">
+      <option value="">Laster oppgaver...</option>
+    </select>
+    <button id="newActivityBtn">+ Ny aktivitet</button>
+    <div id="activityInfo" class="small" style="margin-top:0.3rem;"></div>
+  </section>
+
+  <section id="tasksSection" style="margin-top: 1.3rem; display:none;">
+    <h2 id="activityTitle"></h2>
+    <p class="small">
+      Legg inn prosedyrer/standardoppgaver for denne aktiviteten.
+      <br/>
+      <strong>Offset (dager fra event):</strong> negativt tall = før, 0 = samme dag, positivt = etter.
+    </p>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 45px;">Aktiv</th>
+          <th style="width: 70px;">Målgr.</th>
+          <th>Formål</th>
+          <th>Kanal</th>
+          <th>Oppgave / prosedyre</th>
+          <th style="width: 80px;">Dager fra</th>
+          <th>Ansvarlig</th>
+          <th style="width: 60px;">Slett</th>
+        </tr>
+      </thead>
+      <tbody id="tasksTableBody"></tbody>
+    </table>
+
+    <button id="addTaskBtn">+ Legg til standardoppgave</button>
+    <button id="saveTasksBtn" class="primary">Lagre endringer</button>
+    <span id="saveStatus"></span>
+    <div id="errorBox" class="error" style="display:none;"></div>
+  </section>
+
+  <!-- Supabase JS SDK v2 -->
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <script>
+    // ===== KONFIGURASJON =====
+    const SUPABASE_URL = 'https://DIN-PROSJEKT-URL.supabase.co'; // <-- BYTT UT
+    const SUPABASE_ANON_KEY = 'DIN_ANON_KEY';                     // <-- BYTT UT
+
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const activityFilter = document.getElementById('activityFilter');
+    const newActivityBtn = document.getElementById('newActivityBtn');
+    const activityInfo = document.getElementById('activityInfo');
+    const tasksSection = document.getElementById('tasksSection');
+    const activityTitleEl = document.getElementById('activityTitle');
+    const tasksTableBody = document.getElementById('tasksTableBody');
+    const addTaskBtn = document.getElementById('addTaskBtn');
+    const saveTasksBtn = document.getElementById('saveTasksBtn');
+    const saveStatusEl = document.getElementById('saveStatus');
+    const errorBox = document.getElementById('errorBox');
+
+    let allStandardTasks = [];   // alle rader fra standard_tasks
+    let currentActivityId = null;
+    let currentActivityName = null;
+    let currentTasks = [];       // filtrert på valgt aktivitet
+    let toDeleteIds = new Set(); // id-er som skal slettes
+
+    function uniq(arr) {
+      return [...new Set(arr)];
+    }
+
+    function normalizeActivityId(raw) {
+      return (raw || '').trim();
+    }
+
+    function renderActivityDropdown() {
+      const activityIds = uniq(
+        allStandardTasks
+          .map(t => normalizeActivityId(t.activity_id))
+          .filter(id => id !== '')
+      ).sort();
+
+      activityFilter.innerHTML = '';
+      const defaultOpt = document.createElement('option');
+      defaultOpt.value = '';
+      defaultOpt.textContent = 'Velg aktivitet...';
+      activityFilter.appendChild(defaultOpt);
+
+      activityIds.forEach(id => {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = id;
+        activityFilter.appendChild(opt);
+      });
+
+      activityInfo.textContent = activityIds.length
+        ? `Antall registrerte aktiviteter: ${activityIds.length}`
+        : 'Ingen standardoppgaver registrert ennå.';
+    }
+
+    function renderTasksTable() {
+      tasksTableBody.innerHTML = '';
+
+      currentTasks.forEach(task => {
+        const tr = document.createElement('tr');
+        if (!task.active) {
+          tr.classList.add('row-inactive');
+        }
+
+        // Aktiv
+        const tdActive = document.createElement('td');
+        tdActive.style.textAlign = 'center';
+        const activeCheckbox = document.createElement('input');
+        activeCheckbox.type = 'checkbox';
+        activeCheckbox.checked = task.active !== false;
+        activeCheckbox.addEventListener('change', () => {
+          task.active = activeCheckbox.checked;
+          tr.classList.toggle('row-inactive', !task.active);
+        });
+        tdActive.appendChild(activeCheckbox);
+
+        // Målgruppe (A/B/C)
+        const tdAudience = document.createElement('td');
+        const audienceInput = document.createElement('input');
+        audienceInput.type = 'text';
+        audienceInput.value = task.audience_code || '';
+        audienceInput.placeholder = 'A/B/C';
+        audienceInput.addEventListener('input', () => {
+          task.audience_code = audienceInput.value.trim();
+        });
+        tdAudience.appendChild(audienceInput);
+
+        // Formål
+        const tdPurpose = document.createElement('td');
+        const purposeInput = document.createElement('input');
+        purposeInput.type = 'text';
+        purposeInput.value = task.purpose || '';
+        purposeInput.placeholder = 'Hva er hensikten?';
+        purposeInput.addEventListener('input', () => {
+          task.purpose = purposeInput.value;
+        });
+        tdPurpose.appendChild(purposeInput);
+
+        // Kanal
+        const tdChannel = document.createElement('td');
+        const channelInput = document.createElement('input');
+        channelInput.type = 'text';
+        channelInput.value = task.channel || '';
+        channelInput.placeholder = 'Facebook, nettside, osv.';
+        channelInput.addEventListener('input', () => {
+          task.channel = channelInput.value;
+        });
+        tdChannel.appendChild(channelInput);
+
+        // Oppgave
+        const tdDesc = document.createElement('td');
+        const descInput = document.createElement('input');
+        descInput.type = 'text';
+        descInput.value = task.description || '';
+        descInput.placeholder = 'Beskriv standardoppgaven/prosedyren...';
+        descInput.addEventListener('input', () => {
+          task.description = descInput.value;
+        });
+        tdDesc.appendChild(descInput);
+
+        // Dager fra event
+        const tdOffset = document.createElement('td');
+        const offsetInput = document.createElement('input');
+        offsetInput.type = 'number';
+        offsetInput.value = task.offset_days ?? 0;
+        offsetInput.addEventListener('input', () => {
+          const val = parseInt(offsetInput.value || '0', 10);
+          task.offset_days = val;
+        });
+        tdOffset.appendChild(offsetInput);
+
+        // Ansvarlig
+        const tdResp = document.createElement('td');
+        const respInput = document.createElement('input');
+        respInput.type = 'text';
+        respInput.value = task.responsible || '';
+        respInput.placeholder = 'Navn/rolle';
+        respInput.addEventListener('input', () => {
+          task.responsible = respInput.value;
+        });
+        tdResp.appendChild(respInput);
+
+        // Slett
+        const tdDelete = document.createElement('td');
+        tdDelete.style.textAlign = 'center';
+        const deleteBtn = document.createElement('button');
+        deleteBtn.textContent = '×';
+        deleteBtn.title = 'Merk for sletting';
+        deleteBtn.addEventListener('click', () => {
+          if (task.id) {
+            toDeleteIds.add(task.id);
+          }
+          currentTasks = currentTasks.filter(t => t !== task);
+          renderTasksTable();
+        });
+        tdDelete.appendChild(deleteBtn);
+
+        tr.appendChild(tdActive);
+        tr.appendChild(tdAudience);
+        tr.appendChild(tdPurpose);
+        tr.appendChild(tdChannel);
+        tr.appendChild(tdDesc);
+        tr.appendChild(tdOffset);
+        tr.appendChild(tdResp);
+        tr.appendChild(tdDelete);
+
+        tasksTableBody.appendChild(tr);
+      });
+    }
+
+    async function loadStandardTasks() {
+      const { data, error } = await supabase
+        .from('standard_tasks')
+        .select('*')
+        .order('activity_id', { ascending: true })
+        .order('offset_days', { ascending: true });
+
+      if (error) {
+        console.error('Feil ved henting av standard_tasks:', error);
+        activityFilter.innerHTML = '<option value="">Feil ved henting</option>';
+        return;
+      }
+
+      allStandardTasks = data || [];
+      renderActivityDropdown();
+    }
+
+    function onActivityChange() {
+      const id = activityFilter.value;
+      if (!id) {
+        tasksSection.style.display = 'none';
+        currentActivityId = null;
+        currentActivityName = null;
+        currentTasks = [];
+        renderTasksTable();
+        return;
+      }
+
+      currentActivityId = id;
+
+      // Finn navn dersom noe har det
+      const withName = allStandardTasks.find(
+        t => normalizeActivityId(t.activity_id) === id && t.activity_name
+      );
+      currentActivityName = withName ? withName.activity_name : '';
+
+      activityTitleEl.innerHTML = `Aktivitet: <strong>${currentActivityId}</strong>` +
+        (currentActivityName ? `<span class="pill">${currentActivityName}</span>` : '');
+
+      currentTasks = allStandardTasks.filter(
+        t => normalizeActivityId(t.activity_id) === id
+      );
+      toDeleteIds.clear();
+      tasksSection.style.display = 'block';
+      renderTasksTable();
+    }
+
+    activityFilter.addEventListener('change', onActivityChange);
+
+    newActivityBtn.addEventListener('click', () => {
+      const id = prompt('Skriv inn ny aktivitet-ID (f.eks. G01, BF01, KONF01):');
+      if (!id) return;
+      const cleanId = normalizeActivityId(id);
+      if (!cleanId) return;
+
+      const name = prompt('Skriv inn navn på aktiviteten (frivillig):') || '';
+
+      // Legg til i minnet
+      currentActivityId = cleanId;
+      currentActivityName = name;
+
+      // Sørg for at dropdown får den nye
+      allStandardTasks.push({
+        id: null,
+        activity_id: cleanId,
+        activity_name: name,
+        description: '',
+        offset_days: 0,
+        channel: '',
+        audience_code: '',
+        purpose: '',
+        responsible: '',
+        active: true
+      });
+
+      renderActivityDropdown();
+      activityFilter.value = cleanId;
+      onActivityChange();
+    });
+
+    addTaskBtn.addEventListener('click', () => {
+      if (!currentActivityId) return;
+
+      const newTask = {
+        id: null, // Supabase genererer
+        activity_id: currentActivityId,
+        activity_name: currentActivityName || null,
+        description: '',
+        offset_days: 0,
+        channel: '',
+        audience_code: '',
+        purpose: '',
+        responsible: '',
+        active: true
+      };
+      currentTasks.push(newTask);
+      renderTasksTable();
+    });
+
+    saveTasksBtn.addEventListener('click', async () => {
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
+      saveStatusEl.textContent = 'Lagrer...';
+
+      // Validering: må ha activity_id
+      if (!currentActivityId) {
+        saveStatusEl.textContent = '';
+        errorBox.textContent = 'Ingen aktivitet valgt.';
+        errorBox.style.display = 'block';
+        return;
+      }
+
+      // 1) Slett markerte
+      if (toDeleteIds.size > 0) {
+        const ids = Array.from(toDeleteIds);
+        const { error: delError } = await supabase
+          .from('standard_tasks')
+          .delete()
+          .in('id', ids);
+
+        if (delError) {
+          console.error('Feil ved sletting:', delError);
+          saveStatusEl.textContent = '';
+          errorBox.textContent = 'Feil ved sletting av rader.';
+          errorBox.style.display = 'block';
+          return;
+        }
+        toDeleteIds.clear();
+      }
+
+      // 2) Upsert (lagre/oppdatere) gjeldende rader
+      // Vi filtrerer bort helt tomme rader (ingen beskrivelse, ingen kanal, ingen formål)
+      const rowsToSave = currentTasks.filter(t =>
+        (t.description && t.description.trim() !== '') ||
+        (t.channel && t.channel.trim() !== '') ||
+        (t.purpose && t.purpose.trim() !== '')
+      ).map(t => ({
+        ...t,
+        activity_id: currentActivityId,
+        activity_name: currentActivityName || t.activity_name || null
+      }));
+
+      if (rowsToSave.length === 0 && currentTasks.length > 0) {
+        // Tillatt, men vi gir en advarsel
+        console.warn('Ingen rader å lagre (alle er tomme).');
+      }
+
+      if (rowsToSave.length > 0) {
+        const { data, error } = await supabase
+          .from('standard_tasks')
+          .upsert(rowsToSave, { onConflict: 'id' });
+
+        if (error) {
+          console.error('Feil ved lagring:', error);
+          saveStatusEl.textContent = '';
+          errorBox.textContent = 'Feil ved lagring av standardoppgaver.';
+          errorBox.style.display = 'block';
+          return;
+        }
+
+        // Oppdater lokalt
+        // Fjern gamle rader for denne aktiviteten fra allStandardTasks
+        allStandardTasks = allStandardTasks.filter(
+          t => normalizeActivityId(t.activity_id) !== currentActivityId
+        );
+        // Legg inn det som ble returnert fra databasen
+        allStandardTasks.push(...(data || []));
+      } else {
+        // Hvis ingen rader å lagre, fjerner vi alle i denne aktiviteten fra allStandardTasks
+        allStandardTasks = allStandardTasks.filter(
+          t => normalizeActivityId(t.activity_id) !== currentActivityId
+        );
+      }
+
+      // Rebuild dropdown + visning
+      renderActivityDropdown();
+      activityFilter.value = currentActivityId;
+      onActivityChange();
+
+      saveStatusEl.textContent = 'Lagret!';
+      setTimeout(() => (saveStatusEl.textContent = ''), 2000);
+    });
+
+    document.addEventListener('DOMContentLoaded', () => {
+      loadStandardTasks();
+    });
+  </script>
+</body>
+</html>
