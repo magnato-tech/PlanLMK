@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kommunikasjonsoppgaver – Lillesand misjonskirke</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 1.5rem;
+      max-width: 1000px;
+    }
+    h1, h2 {
+      margin-bottom: 0.3rem;
+    }
+    label {
+      font-weight: 600;
+    }
+    select, input[type="text"], input[type="number"] {
+      padding: 0.25rem 0.4rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.5rem;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 0.3rem 0.4rem;
+      font-size: 0.9rem;
+      vertical-align: middle;
+    }
+    th {
+      background: #f3f3f3;
+      text-align: left;
+    }
+    tr.done {
+      text-decoration: line-through;
+      opacity: 0.6;
+    }
+    button {
+      padding: 0.35rem 0.7rem;
+      margin-top: 0.5rem;
+      cursor: pointer;
+      border-radius: 4px;
+      border: 1px solid #999;
+      background: #f5f5f5;
+    }
+    button.primary {
+      background: #2f7cf6;
+      color: white;
+      border-color: #2f7cf6;
+    }
+    button + button {
+      margin-left: 0.4rem;
+    }
+    #saveStatus {
+      font-size: 0.85rem;
+    }
+    .pill {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      background: #eef3ff;
+      font-size: 0.75rem;
+      margin-left: 0.3rem;
+    }
+    .small {
+      font-size: 0.8rem;
+      color: #555;
+    }
+    .error {
+      color: #b00020;
+      font-size: 0.85rem;
+      margin-top: 0.3rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>Kommunikasjonsoppgaver</h1>
+  <p class="small">
+    Datastrøm: <strong>Kalender (ICS)</strong> → <strong>Event</strong> → <strong>Oppgaver per event</strong> (lagret i database).
+  </p>
+
+  <!-- Velg arrangement -->
+  <section>
+    <label for="eventSelect">Velg arrangement fra kalenderen:</label><br />
+    <select id="eventSelect" style="min-width: 260px;">
+      <option value="">Laster kalender...</option>
+    </select>
+    <div id="calendarError" class="error" style="display:none;"></div>
+  </section>
+
+  <!-- Oppgaver for valgt event -->
+  <section id="tasksSection" style="margin-top: 1.5rem; display:none;">
+    <h2 id="eventTitle"></h2>
+    <p id="eventMeta" class="small"></p>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 60px;">Ferdig</th>
+          <th>Oppgave</th>
+          <th style="width: 110px;">Dager fra event</th>
+          <th style="width: 140px;">Frist (dato)</th>
+        </tr>
+      </thead>
+      <tbody id="tasksTableBody"></tbody>
+    </table>
+
+    <button id="addTaskBtn">+ Legg til oppgave</button>
+    <button id="saveTasksBtn" class="primary">Lagre oppgaver</button>
+    <span id="saveStatus"></span>
+  </section>
+
+  <!-- Supabase JS SDK v2 -->
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <script>
+    // ===== KONFIGURASJON =====
+    // Kalender-URL (ICS) – samme som i Parametre-arket
+    const ICS_URL =
+      'https://lillesandmisjonskirke.no/er/functions/calendar/shareplanneritems.aspx?categoryid=81';
+
+    // Supabase-prosjektet ditt:
+    const SUPABASE_URL = 'https://DIN-PROSJEKT-URL.supabase.co'; // <-- BYTT UT
+    const SUPABASE_ANON_KEY = 'DIN_ANON_KEY';                     // <-- BYTT UT
+
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // DOM-elementer
+    const eventSelect = document.getElementById('eventSelect');
+    const calendarErrorEl = document.getElementById('calendarError');
+    const tasksSection = document.getElementById('tasksSection');
+    const eventTitleEl = document.getElementById('eventTitle');
+    const eventMetaEl = document.getElementById('eventMeta');
+    const tasksTableBody = document.getElementById('tasksTableBody');
+    const addTaskBtn = document.getElementById('addTaskBtn');
+    const saveTasksBtn = document.getElementById('saveTasksBtn');
+    const saveStatusEl = document.getElementById('saveStatus');
+
+    let events = [];        // alle events fra kalenderen
+    let currentEvent = null;
+    let currentTasks = [];  // oppgaver for valgt event
+
+    // ===== HJELPEFUNKSJONER =====
+    function addDays(date, days) {
+      const d = new Date(date.getTime());
+      d.setDate(d.getDate() + days);
+      return d;
+    }
+
+    function formatDateTime(date) {
+      return date.toLocaleDateString('nb-NO') + ' kl. ' +
+        date.toLocaleTimeString('nb-NO', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatDate(date) {
+      return date.toLocaleDateString('nb-NO');
+    }
+
+    // Enkel ICS-parser: henter UID, DTSTART, SUMMARY
+    function parseIcs(icsText) {
+      const lines = icsText.split(/\r?\n/);
+      const events = [];
+      let current = null;
+
+      for (let rawLine of lines) {
+        const line = rawLine.trim();
+        if (line === 'BEGIN:VEVENT') {
+          current = {};
+        } else if (line === 'END:VEVENT') {
+          if (current && current.uid && current.start && current.summary) {
+            events.push(current);
+          }
+          current = null;
+        } else if (current) {
+          if (line.startsWith('UID:')) {
+            current.uid = line.substring(4).trim();
+          } else if (line.startsWith('SUMMARY:')) {
+            current.summary = line.substring(8).trim();
+          } else if (line.startsWith('DTSTART')) {
+            const parts = line.split(':');
+            const dt = parts[1].trim();
+            // Støtter både "YYYYMMDD" og "YYYYMMDDTHHMMSS"
+            const year = parseInt(dt.substring(0, 4), 10);
+            const month = parseInt(dt.substring(4, 6), 10) - 1;
+            const day = parseInt(dt.substring(6, 8), 10);
+            let hour = 0, min = 0;
+            if (dt.length >= 13) {
+              hour = parseInt(dt.substring(9, 11), 10);
+              min = parseInt(dt.substring(11, 13), 10);
+            }
+            current.start = new Date(Date.UTC(year, month, day, hour, min));
+          }
+        }
+      }
+      return events;
+    }
+
+    async function fetchEventsFromCalendar() {
+      try {
+        const res = await fetch(ICS_URL);
+        if (!res.ok) {
+          throw new Error('HTTP-feil ' + res.status);
+        }
+        const text = await res.text();
+        const parsed = parseIcs(text);
+
+        // Konverter til vårt interne format
+        return parsed
+          .filter(ev => ev.start) // bare events med dato
+          .sort((a, b) => a.start - b.start) // sorter på dato
+          .map(ev => ({
+            id: ev.uid,
+            title: ev.summary,
+            start: ev.start
+          }));
+      } catch (err) {
+        console.error('Feil ved henting av ICS:', err);
+        calendarErrorEl.textContent =
+          'Klarte ikke å hente kalenderen. Dette kan være pga. CORS/tilgang. ' +
+          'Selv om dette er et fungerende utkast, kan selve henting av ICS kreve en liten backend.';
+        calendarErrorEl.style.display = 'block';
+
+        // Fallback: tom liste
+        return [];
+      }
+    }
+
+    function populateEventSelect(events) {
+      eventSelect.innerHTML = '';
+      const defaultOpt = document.createElement('option');
+      defaultOpt.value = '';
+      defaultOpt.textContent = 'Velg arrangement...';
+      eventSelect.appendChild(defaultOpt);
+
+      events.forEach(ev => {
+        const opt = document.createElement('option');
+        opt.value = ev.id;
+        opt.textContent = `${ev.title} (${ev.start.toLocaleDateString('nb-NO')})`;
+        eventSelect.appendChild(opt);
+      });
+
+      eventSelect.addEventListener('change', onEventChange);
+    }
+
+    function updateRowStyle(row, done) {
+      if (done) {
+        row.classList.add('done');
+      } else {
+        row.classList.remove('done');
+      }
+    }
+
+    function renderTasks() {
+      tasksTableBody.innerHTML = '';
+
+      currentTasks.forEach(task => {
+        const tr = document.createElement('tr');
+
+        const deadline = addDays(currentEvent.start, task.offset_days ?? 0);
+
+        // Ferdig
+        const tdDone = document.createElement('td');
+        tdDone.style.textAlign = 'center';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = !!task.done;
+        checkbox.addEventListener('change', () => {
+          task.done = checkbox.checked;
+          updateRowStyle(tr, task.done);
+        });
+        tdDone.appendChild(checkbox);
+
+        // Beskrivelse
+        const tdDesc = document.createElement('td');
+        const descInput = document.createElement('input');
+        descInput.type = 'text';
+        descInput.value = task.description || '';
+        descInput.style.width = '100%';
+        descInput.placeholder = 'Beskriv oppgaven...';
+        descInput.addEventListener('input', () => {
+          task.description = descInput.value;
+        });
+        tdDesc.appendChild(descInput);
+
+        // Offset dager
+        const tdOffset = document.createElement('td');
+        const offsetInput = document.createElement('input');
+        offsetInput.type = 'number';
+        offsetInput.value = task.offset_days ?? 0;
+        offsetInput.style.width = '4rem';
+        offsetInput.addEventListener('input', () => {
+          const val = parseInt(offsetInput.value || '0', 10);
+          task.offset_days = val;
+          tdDeadline.textContent = formatDate(addDays(currentEvent.start, val));
+        });
+        tdOffset.appendChild(offsetInput);
+
+        // Fristdato
+        const tdDeadline = document.createElement('td');
+        tdDeadline.textContent = formatDate(deadline);
+
+        tr.appendChild(tdDone);
+        tr.appendChild(tdDesc);
+        tr.appendChild(tdOffset);
+        tr.appendChild(tdDeadline);
+
+        updateRowStyle(tr, task.done);
+        tasksTableBody.appendChild(tr);
+      });
+    }
+
+    // ===== HENDELSES-HÅNDTERERE =====
+    async function onEventChange() {
+      const eventId = eventSelect.value;
+      if (!eventId) {
+        tasksSection.style.display = 'none';
+        return;
+      }
+
+      currentEvent = events.find(e => e.id === eventId);
+      if (!currentEvent) {
+        tasksSection.style.display = 'none';
+        return;
+      }
+
+      eventTitleEl.textContent = currentEvent.title;
+      eventMetaEl.innerHTML =
+        `Dato: <strong>${formatDateTime(currentEvent.start)}</strong>` +
+        `<span class="pill">Event-ID: ${currentEvent.id}</span>`;
+
+      // Hent oppgaver fra Supabase
+      const { data, error } = await supabase
+        .from('event_tasks')
+        .select('*')
+        .eq('event_id', eventId)
+        .order('offset_days', { ascending: true });
+
+      if (error) {
+        console.error('Feil ved henting av oppgaver:', error);
+        alert('Klarte ikke å hente oppgaver for dette eventet.');
+        return;
+      }
+
+      currentTasks = data || [];
+      tasksSection.style.display = 'block';
+      renderTasks();
+    }
+
+    addTaskBtn.addEventListener('click', () => {
+      if (!currentEvent) return;
+
+      const newTask = {
+        // id genereres av Supabase, men vi lager midlertidig tilfeldig verdi for UI
+        id: crypto.randomUUID(),
+        event_id: currentEvent.id,
+        description: '',
+        offset_days: 0,
+        done: false
+      };
+      currentTasks.push(newTask);
+      renderTasks();
+    });
+
+    saveTasksBtn.addEventListener('click', async () => {
+      if (!currentEvent) return;
+      saveStatusEl.textContent = 'Lagrer...';
+
+      // Vi antar at "id" er primærnøkkelen i Supabase-tabellen "event_tasks"
+      const { data, error } = await supabase
+        .from('event_tasks')
+        .upsert(currentTasks, { onConflict: 'id' });
+
+      if (error) {
+        console.error('Feil ved lagring:', error);
+        saveStatusEl.textContent = 'Feil ved lagring.';
+        return;
+      }
+
+      saveStatusEl.textContent = 'Lagret!';
+      // Oppdater med data fra databasen (der id osv. er korrekte)
+      currentTasks = data || currentTasks;
+      renderTasks();
+    });
+
+    // ===== INIT: HENT KALENDER OG FYLL NEDTREKK =====
+    document.addEventListener('DOMContentLoaded', async () => {
+      events = await fetchEventsFromCalendar();
+      if (events.length === 0) {
+        eventSelect.innerHTML = '<option value="">Ingen events funnet</option>';
+      } else {
+        populateEventSelect(events);
+      }
+    });
+  </script>
+</body>
+</html>
