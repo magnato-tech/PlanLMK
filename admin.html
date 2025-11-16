@@ -131,8 +131,8 @@
   <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
   <script>
     // ===== KONFIGURASJON =====
-    const SUPABASE_URL = 'https://DIN-PROSJEKT-URL.supabase.co'; // <-- BYTT UT
-    const SUPABASE_ANON_KEY = 'DIN_ANON_KEY';                     // <-- BYTT UT
+    const SUPABASE_URL = 'https://ufjxvrahasabinvxbhqs.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVmanh2cmFoYXNhYmludnhiaHFzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjMyOTU3NTMsImV4cCI6MjA3ODg3MTc1M30.2jysL8as3JobcF7wJONx9_hAwj7QlUqwJ0Ya1LxqkIU';
 
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -432,7 +432,6 @@
       }
 
       // 2) Upsert (lagre/oppdatere) gjeldende rader
-      // Vi filtrerer bort helt tomme rader (ingen beskrivelse, ingen kanal, ingen formål)
       const rowsToSave = currentTasks.filter(t =>
         (t.description && t.description.trim() !== '') ||
         (t.channel && t.channel.trim() !== '') ||
@@ -444,7 +443,6 @@
       }));
 
       if (rowsToSave.length === 0 && currentTasks.length > 0) {
-        // Tillatt, men vi gir en advarsel
         console.warn('Ingen rader å lagre (alle er tomme).');
       }
 
@@ -462,20 +460,16 @@
         }
 
         // Oppdater lokalt
-        // Fjern gamle rader for denne aktiviteten fra allStandardTasks
         allStandardTasks = allStandardTasks.filter(
           t => normalizeActivityId(t.activity_id) !== currentActivityId
         );
-        // Legg inn det som ble returnert fra databasen
         allStandardTasks.push(...(data || []));
       } else {
-        // Hvis ingen rader å lagre, fjerner vi alle i denne aktiviteten fra allStandardTasks
         allStandardTasks = allStandardTasks.filter(
           t => normalizeActivityId(t.activity_id) !== currentActivityId
         );
       }
 
-      // Rebuild dropdown + visning
       renderActivityDropdown();
       activityFilter.value = currentActivityId;
       onActivityChange();
@@ -490,3 +484,4 @@
   </script>
 </body>
 </html>
+
